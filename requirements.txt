@@ -1,0 +1,15 @@
+# CPU-only wheels: pulls a ~200MB torch build instead of the ~2GB CUDA one.
+# Deploy hosts here (Railway) run CPU-only, so the GPU build is dead weight.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+fastapi
+uvicorn[standard]
+yfinance
+
+numpy
+pandas>=2.3.3  # 2.2.2 (upstream's pin) segfaults on Python 3.13 + NumPy 2.x
+torch>=2.0.0
+einops==0.8.1
+huggingface_hub==0.33.1
+tqdm==4.67.1
+safetensors==0.6.2
