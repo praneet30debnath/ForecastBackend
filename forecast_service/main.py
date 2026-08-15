@@ -35,7 +35,7 @@ def health():
     return {"status": "ok"}
 
 tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+model = Kronos.from_pretrained("NeoQuasar/Kronos-base")
 # device="cpu": Kronos' bit-quantization ops crash on Apple MPS
 predictor = KronosPredictor(model, tokenizer, device="cpu", max_context=512)
 
