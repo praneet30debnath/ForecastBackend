@@ -1,9 +1,11 @@
 # forecast_service/main.py
+import json
 import os
 import re
 
 import httpx
 import pandas as pd
+import redis
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -38,6 +40,10 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, device="cpu", max_context=512)
 
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9.&-]{1,20}$")
+
+_redis_url = os.environ.get("REDIS_URL")
+_cache: redis.Redis | None = redis.from_url(_redis_url, decode_responses=True) if _redis_url else None
+CACHE_TTL = int(os.environ.get("FORECAST_CACHE_TTL", 1800))  # seconds; default 30 min
 
 _YF_HEADERS = {
     "User-Agent": (
@@ -96,6 +102,12 @@ def predict_symbol(symbol: str, history_days: int = 180, pred_len: int = 10):
         raise HTTPException(status_code=400, detail="Invalid NSE symbol.")
     ticker = symbol if "." in symbol else f"{symbol}.NS"
 
+    cache_key = f"stockiq:forecast:{symbol}:{history_days}:{pred_len}"
+    if _cache:
+        cached = _cache.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
     try:
         hist = _fetch_history(ticker)
     except httpx.HTTPStatusError as e:
@@ -147,7 +159,7 @@ def predict_symbol(symbol: str, history_days: int = 180, pred_len: int = 10):
             })
         return out
 
-    return {
+    response = {
         "symbol": symbol,
         "ticker": ticker,
         "last_close": float(hist["Close"].iloc[-1]),
@@ -160,3 +172,6 @@ def predict_symbol(symbol: str, history_days: int = 180, pred_len: int = 10):
             "attention": attention,
         },
     }
+    if _cache:
+        _cache.setex(cache_key, CACHE_TTL, json.dumps(response))
+    return response
