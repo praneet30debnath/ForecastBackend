@@ -2,8 +2,8 @@
 import os
 import re
 
+import httpx
 import pandas as pd
-import yfinance as yf
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,6 +39,43 @@ predictor = KronosPredictor(model, tokenizer, device="cpu", max_context=512)
 
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9.&-]{1,20}$")
 
+_YF_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _fetch_history(ticker: str) -> pd.DataFrame:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    r = httpx.get(url, params={"interval": "1d", "range": "2y"}, headers=_YF_HEADERS, timeout=30)
+    r.raise_for_status()
+    payload = r.json()
+    result = (payload.get("chart") or {}).get("result") or []
+    if not result:
+        return pd.DataFrame()
+    result = result[0]
+    timestamps = result["timestamp"]
+    q = result["indicators"]["quote"][0]
+    df = pd.DataFrame({
+        "Date": (
+            pd.to_datetime(timestamps, unit="s", utc=True)
+            .tz_convert("Asia/Kolkata")
+            .tz_localize(None)
+            .normalize()
+        ),
+        "Open": q["open"],
+        "High": q["high"],
+        "Low": q["low"],
+        "Close": q["close"],
+        "Volume": q["volume"],
+    })
+    return df.dropna(subset=["Close"]).reset_index(drop=True)
+
 
 @app.post("/forecast")
 def forecast(payload: dict):
@@ -59,13 +96,19 @@ def predict_symbol(symbol: str, history_days: int = 180, pred_len: int = 10):
         raise HTTPException(status_code=400, detail="Invalid NSE symbol.")
     ticker = symbol if "." in symbol else f"{symbol}.NS"
 
-    hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+    try:
+        hist = _fetch_history(ticker)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"No NSE data found for '{symbol}'.")
+        raise HTTPException(status_code=502, detail="Yahoo Finance returned an error.")
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="Could not reach Yahoo Finance.")
+
     if hist.empty:
         raise HTTPException(status_code=404, detail=f"No NSE data found for '{symbol}'.")
 
-    hist = hist.reset_index()
-    hist["Date"] = pd.to_datetime(hist["Date"]).dt.tz_localize(None)
-    hist = hist.tail(min(history_days, 512))
+    hist = hist.tail(min(history_days, 512)).reset_index(drop=True)
 
     candles_df = hist[["Open", "High", "Low", "Close", "Volume"]].rename(
         columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
